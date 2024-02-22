@@ -1,6 +1,6 @@
 import { promisify } from 'node:util'
 import { gunzip, gzip } from 'node:zlib'
-import { Readable } from 'node:stream'
+import { Readable, Transform, compose as composeStreams } from 'node:stream'
 
 import { fromPromise, of, Rejected, Resolved } from 'hyper-async'
 import { always, applySpec, compose, identity, map, path, prop, transduce } from 'ramda'
@@ -444,6 +444,21 @@ export function findProcessMemoryBeforeWith ({
       .bichain(maybeCheckpointFromArweave, Resolved)
       .bichain(coldStart, Resolved)
       .toPromise()
+}
+
+export function cronMessageStreamWith ({ cronMessagesBetween, readFileByLine }) {
+  return async ({ streamId, processId, processOwner, originBlock, blockBased, timeBased, blocksMeta, left, right }) => {
+    const cronMessages = await cronMessagesBetween({ streamId, processId, processOwner, originBlock, blockBased, timeBased, blocksMeta, left, right })
+
+    if (Array.isArray(cronMessages)) return Readable.from(cronMessages)
+
+    return composeStreams(
+      readFileByLine(cronMessages).iterator(),
+      Transform.from(async function * toJson (lines) {
+        for await (const line of lines) yield JSON.parse(line)
+      })
+    )
+  }
 }
 
 export function saveLatestProcessMemoryWith ({ cache, logger }) {

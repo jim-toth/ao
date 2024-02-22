@@ -22,6 +22,8 @@ import { readCronResultsWith } from './api/readCronResults.js'
 import { healthcheckWith } from './api/healthcheck.js'
 import { readResultsWith } from './api/readResults.js'
 import { dryRunWith } from './api/dryRun.js'
+import { createInterface } from 'node:readline'
+import { createReadStream } from 'node:fs'
 
 export { createLogger } from './logger.js'
 export { domainConfigSchema, positiveIntSchema } from './model.js'
@@ -70,6 +72,7 @@ export const createApis = async (ctx) => {
             WASM_MODULE_CACHE_MAX_SIZE: ctx.WASM_MODULE_CACHE_MAX_SIZE,
             WASM_INSTANCE_CACHE_MAX_SIZE: ctx.WASM_INSTANCE_CACHE_MAX_SIZE,
             WASM_BINARY_FILE_DIRECTORY: ctx.WASM_BINARY_FILE_DIRECTORY,
+            CRON_MESSAGES_FILE_DIRECTORY: ctx.CRON_MESSAGES_FILE_DIRECTORY,
             GATEWAY_URL: ctx.GATEWAY_URL,
             id: workerId
           }
@@ -156,6 +159,13 @@ export const createApis = async (ctx) => {
        */
       evaluate: (...args) => workerPool.exec('evaluate', args),
       logger
+    }),
+    cronMessageStream: AoProcessClient.cronMessageStreamWith({
+      cronMessagesBetween: (...args) => workerPool.exec('cronMessagesBetween', args),
+      readFileByLine: (file) => createInterface({
+        input: createReadStream(file),
+        crlfDelay: Infinity
+      })
     }),
     findMessageHashBefore: AoEvaluationClient.findMessageHashBeforeWith({ pouchDb, logger }),
     loadTimestamp: AoSuClient.loadTimestampWith({ fetch: ctx.fetch, logger }),

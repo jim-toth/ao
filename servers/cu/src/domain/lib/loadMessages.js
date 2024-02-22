@@ -11,6 +11,7 @@ import {
   loadTimestampSchema, locateSchedulerSchema, saveBlocksSchema
 } from '../dal.js'
 import { trimSlash } from '../utils.js'
+import { randomBytes } from 'node:crypto'
 
 export const toSeconds = (millis) => Math.floor(millis / 1000)
 
@@ -223,8 +224,15 @@ export function cronMessagesBetweenWith ({
   moduleTags,
   originBlock,
   crons,
-  blocksMeta
+  blocksMeta,
+  cronMessageStream
 }) {
+  const streamId = randomBytes(8).toString('hex')
+  const AoGlobal = {
+    Process: { Id: processId, Owner: processOwner, Tags: processTags },
+    Module: { Id: moduleId, Owner: moduleOwner, Tags: moduleTags }
+  }
+
   const blockBased = crons.filter(s => s.unit === 'block' || s.unit === 'blocks')
   /**
    * sort time based crons from most granualar to least granular. This will ensure
@@ -238,98 +246,13 @@ export function cronMessagesBetweenWith ({
    * between the left and right boundaries
    */
   return async function * cronMessages (left, right) {
-    /**
-     * { height, timestamp }
-     */
-    const leftBlock = left.block
-    const rightBlock = right.block
-    const leftOrdinate = left.ordinate
+    const stream = await cronMessageStream({
+      streamId, processId, processOwner, originBlock, blockBased, timeBased, blocksMeta, left, right
+    })
 
-    /**
-     * Grab the blocks that are between the left and right boundary,
-     * according to their timestamp
-     */
-    const blocksInRange = blocksMeta.filter((b) =>
-      b.timestamp > leftBlock.timestamp &&
-      b.timestamp < rightBlock.timestamp
-    )
-
-    /**
-     * Start at the left block timestamp, incrementing one second per iteration.
-     * - if our current time gets up to the next block, then check for any block-based cron messages to generate
-     * - Check for any timebased crons to generate on each tick
-     *
-     * The curBlock always starts at the leftBlock, then increments as we tick
-     */
-    let curBlock = leftBlock
-    for (let curTimestamp = leftBlock.timestamp; curTimestamp < rightBlock.timestamp; curTimestamp += 1000) {
-      /**
-       * We've ticked up to our next block
-       * so check if it's on a Cron Interval
-       *
-       * This way, Block-based messages will always be pushed onto the stream of messages
-       * before time-based messages
-       */
-      const nextBlock = blocksInRange[0]
-      if (nextBlock && toSeconds(curTimestamp) >= toSeconds(nextBlock.timestamp)) {
-        /**
-         * Make sure to remove the block from our range,
-         * since we've ticked past it,
-         *
-         * and save it as the new current block
-         */
-        curBlock = blocksInRange.shift()
-
-        for (let i = 0; i < blockBased.length; i++) {
-          const cron = blockBased[i]
-
-          if (isBlockOnCron({ height: curBlock.height, originHeight: originBlock.height, cron })) {
-            yield {
-              cron: `${i}-${cron.interval}`,
-              ordinate: leftOrdinate,
-              name: `Cron Message ${curBlock.timestamp},${leftOrdinate},${i}-${cron.interval}`,
-              message: {
-                Owner: processOwner,
-                Target: processId,
-                From: processOwner,
-                Tags: cron.message.tags,
-                Timestamp: curBlock.timestamp,
-                'Block-Height': curBlock.height,
-                Cron: true
-              },
-              AoGlobal: {
-                Process: { Id: processId, Owner: processOwner, Tags: processTags },
-                Module: { Id: moduleId, Owner: moduleOwner, Tags: moduleTags }
-              }
-            }
-          }
-        }
-      }
-
-      for (let i = 0; i < timeBased.length; i++) {
-        const cron = timeBased[i]
-
-        if (isTimestampOnCron({ timestamp: curTimestamp, originTimestamp: originBlock.timestamp, cron })) {
-          yield {
-            cron: `${i}-${cron.interval}`,
-            ordinate: leftOrdinate,
-            name: `Cron Message ${curTimestamp},${leftOrdinate},${i}-${cron.interval}`,
-            message: {
-              Owner: processOwner,
-              Target: processId,
-              From: processOwner,
-              Tags: cron.message.tags,
-              Timestamp: curTimestamp,
-              'Block-Height': curBlock.height,
-              Cron: true
-            },
-            AoGlobal: {
-              Process: { Id: processId, Owner: processOwner, Tags: processTags },
-              Module: { Id: moduleId, Owner: moduleOwner, Tags: moduleTags }
-            }
-          }
-        }
-      }
+    for await (const cronMessage of stream) {
+      cronMessage.AoGlobal = AoGlobal
+      yield cronMessage
     }
   }
 }
@@ -398,7 +321,7 @@ function loadScheduledMessagesWith ({ locateScheduler, loadMessages, logger }) {
       )
 }
 
-function loadCronMessagesWith ({ loadTimestamp, locateScheduler, findBlocks, loadBlocksMeta, saveBlocks, logger }) {
+function loadCronMessagesWith ({ loadTimestamp, locateScheduler, findBlocks, loadBlocksMeta, saveBlocks, cronMessageStream, logger }) {
   locateScheduler = fromPromise(locateSchedulerSchema.implement(locateScheduler))
   loadTimestamp = fromPromise(loadTimestampSchema.implement(loadTimestamp))
 
@@ -485,7 +408,8 @@ function loadCronMessagesWith ({ loadTimestamp, locateScheduler, findBlocks, loa
                   moduleTags: ctx.moduleTags,
                   originBlock: ctx.block,
                   blocksMeta,
-                  crons
+                  crons,
+                  cronMessageStream
                 })
               }
             })

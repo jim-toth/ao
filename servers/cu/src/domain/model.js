@@ -93,7 +93,12 @@ export const domainConfigSchema = z.object({
    * The time to live for a cache entry in the process latest memory cache.
    * An entries ttl is rest each time it is accessed
    */
-  PROCESS_MEMORY_CACHE_TTL: positiveIntSchema
+  PROCESS_MEMORY_CACHE_TTL: positiveIntSchema,
+  /**
+   * When generating cron messages, where to place files when the number of cron
+   * messages generate overflow into a file
+   */
+  CRON_MESSAGES_FILE_DIRECTORY: z.string().min(1)
 })
 
 export const streamSchema = z.any().refine(stream => {

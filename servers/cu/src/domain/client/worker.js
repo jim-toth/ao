@@ -374,15 +374,13 @@ class CronMessagesStream extends Writable {
         /**
          * write each message as a single line
          */
-        while ((m = this.cronMessages.shift()) !== null) this.fileStream.write(`${JSON.stringify(m)}\n`)
-      }
+        while ((m = this.cronMessages.shift()) !== null) this.fileStream.write(`${JSON.stringify(m)}\r\n`, cb)
+      } else cb()
 
     /**
      * Using a file so just write the message as a single line
      */
-    } else this.fileStream.write(`${JSON.stringify(message)}\n`)
-
-    cb()
+    } else this.fileStream.write(`${JSON.stringify(message)}\r\n`, cb)
   }
 
   /**
