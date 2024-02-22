@@ -1,10 +1,11 @@
 import { workerData } from 'node:worker_threads'
-import { Readable, pipeline } from 'node:stream'
+import { Writable, Readable, pipeline } from 'node:stream'
 import { createReadStream, createWriteStream } from 'node:fs'
 import { join } from 'node:path'
 import { createGunzip, createGzip } from 'node:zlib'
 import { promisify } from 'node:util'
 import { hostname } from 'node:os'
+import { randomBytes } from 'node:crypto'
 
 import { worker } from 'workerpool'
 import { T, always, applySpec, assocPath, cond, defaultTo, identity, ifElse, is, pathOr, pipe, propOr } from 'ramda'
@@ -299,6 +300,204 @@ export function evaluateWith ({
       .toPromise()
 }
 
+/**
+ * ########################
+ * ### Cron Generation ####
+ * ########################
+ */
+
+const toSeconds = (millis) => Math.floor(millis / 1000)
+
+/**
+ * Whether the block height, relative to the origin block height,
+ * matches the provided cron
+ */
+function isBlockOnCron ({ height, originHeight, cron }) {
+  /**
+   * Don't count the origin height as a match
+   */
+  if (height === originHeight) return false
+
+  return (height - originHeight) % cron.value === 0
+}
+
+/**
+ * Whether the timstamp, relative to the origin timestamp,
+ * matches the provided cron
+ */
+function isTimestampOnCron ({ timestamp, originTimestamp, cron }) {
+  /**
+   * The smallest unit of time a cron can be placed is in seconds,
+   * and if we modulo milliseconds, it can return 0 for fractional overlaps
+   * of the scedule
+   *
+   * So convert the times to seconds perform applying modulo
+   */
+  timestamp = toSeconds(timestamp)
+  originTimestamp = toSeconds(originTimestamp)
+  /**
+   * don't count the origin timestamp as a match
+   */
+  if (timestamp === originTimestamp) return false
+  return (timestamp - originTimestamp) % cron.value === 0
+}
+
+class CronMessagesStream extends Writable {
+  constructor (options, { streamId, maxBuffer, fileDirectory }) {
+    super({ ...options, objectMode: true })
+
+    this.streamId = streamId
+    this.fileDirectory = fileDirectory
+    /**
+     * Default to 100 cron messages to be buffered in memory
+     * before switching to a file
+     */
+    this.maxBuffer = maxBuffer || 100
+    this.cronMessages = []
+  }
+
+  _write (message, _encoding, cb) {
+    /**
+     * Haven't needed to swap to buffering
+     * into a file yet
+     */
+    if (!this.fileStream) {
+      this.cronMessages.push(message)
+      /**
+       * Our max buffer size has been reached. Swap to using a file to prevent
+       * memory pressure from getting too high
+       */
+      if (this.cronMessages.length > this.maxBuffer) {
+        this.filePath = join(this.fileDirectory, `${this.streamId}-${randomBytes(8).toString('hex')}`)
+        this.fileStream = createWriteStream(this.filePath)
+        let m
+        /**
+         * write each message as a single line
+         */
+        while ((m = this.cronMessages.shift()) !== null) this.fileStream.write(`${JSON.stringify(m)}\n`)
+      }
+
+    /**
+     * Using a file so just write the message as a single line
+     */
+    } else this.fileStream.write(`${JSON.stringify(message)}\n`)
+
+    cb()
+  }
+
+  /**
+   * Either return the array of cron messages
+   * or the path to the file containing the cron messages (in the case that
+   * there were too many cron messages generated to fit in the buffer)
+   */
+  fork () {
+    if (this.closed) throw new Error('stream has already been closed')
+
+    this.end()
+    return this.filePath || this.cronMessages
+  }
+}
+
+function cronMessagesBetweenWith ({ DIR }) {
+  return ({ streamId, processId, processOwner, originBlock, blockBased, timeBased, blocksMeta, left, right }) => {
+    const cronMessagesStream = new CronMessagesStream(undefined, { streamId, fileDirectory: DIR })
+
+    /**
+     * { height, timestamp }
+     */
+    const leftBlock = left.block
+    const rightBlock = right.block
+    const leftOrdinate = left.ordinate
+
+    /**
+       * Grab the blocks that are between the left and right boundary,
+       * according to their timestamp
+       */
+    const blocksInRange = blocksMeta.filter((b) =>
+      b.timestamp > leftBlock.timestamp &&
+        b.timestamp < rightBlock.timestamp
+    )
+
+    /**
+       * Start at the left block timestamp, incrementing one second per iteration.
+       * - if our current time gets up to the next block, then check for any block-based cron messages to generate
+       * - Check for any timebased crons to generate on each tick
+       *
+       * The curBlock always starts at the leftBlock, then increments as we tick
+       */
+    let curBlock = leftBlock
+    for (let curTimestamp = leftBlock.timestamp; curTimestamp < rightBlock.timestamp; curTimestamp += 1000) {
+      /**
+         * We've ticked up to our next block
+         * so check if it's on a Cron Interval
+         *
+         * This way, Block-based messages will always be pushed onto the stream of messages
+         * before time-based messages
+         */
+      const nextBlock = blocksInRange[0]
+      if (nextBlock && toSeconds(curTimestamp) >= toSeconds(nextBlock.timestamp)) {
+        /**
+           * Make sure to remove the block from our range,
+           * since we've ticked past it,
+           *
+           * and save it as the new current block
+           */
+        curBlock = blocksInRange.shift()
+
+        for (let i = 0; i < blockBased.length; i++) {
+          const cron = blockBased[i]
+
+          if (isBlockOnCron({ height: curBlock.height, originHeight: originBlock.height, cron })) {
+            cronMessagesStream.write({
+              cron: `${i}-${cron.interval}`,
+              ordinate: leftOrdinate,
+              name: `Cron Message ${curBlock.timestamp},${leftOrdinate},${i}-${cron.interval}`,
+              message: {
+                Owner: processOwner,
+                Target: processId,
+                From: processOwner,
+                Tags: cron.message.tags,
+                Timestamp: curBlock.timestamp,
+                'Block-Height': curBlock.height,
+                Cron: true
+              }
+            })
+          }
+        }
+      }
+
+      for (let i = 0; i < timeBased.length; i++) {
+        const cron = timeBased[i]
+
+        if (isTimestampOnCron({ timestamp: curTimestamp, originTimestamp: originBlock.timestamp, cron })) {
+          cronMessagesStream.write({
+            cron: `${i}-${cron.interval}`,
+            ordinate: leftOrdinate,
+            name: `Cron Message ${curTimestamp},${leftOrdinate},${i}-${cron.interval}`,
+            message: {
+              Owner: processOwner,
+              Target: processId,
+              From: processOwner,
+              Tags: cron.message.tags,
+              Timestamp: curTimestamp,
+              'Block-Height': curBlock.height,
+              Cron: true
+            }
+          })
+        }
+      }
+    }
+
+    return cronMessagesStream.fork()
+  }
+}
+
+/**
+ * ##################
+ * ### Worker API ###
+ * ##################
+ */
+
 if (!process.env.NO_WORKER) {
   const logger = createLogger(`ao-cu:${hostname()}:worker-${workerData.id}`)
   /**
@@ -315,6 +514,7 @@ if (!process.env.NO_WORKER) {
         WebAssembly.instantiate(wasmModule, info).then(receiveInstance)
       ),
       logger
-    })
+    }),
+    cronMessagesBetween: cronMessagesBetweenWith({ DIR: workerData.CRON_MESSAGES_FILE_DIRECTORY })
   })
 }
