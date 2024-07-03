@@ -422,3 +422,7 @@ export const maybeParseInt = pipe(
   mapBadData,
   (val) => val ? parseInt(val) : undefined
 )
+
+export const arrayBufferFromMaybeView = (maybeView) => ArrayBuffer.isView(maybeView)
+  ? maybeView.buffer
+  : maybeView // assumes an ArrayBuffer. TODO: maybe an additional check
