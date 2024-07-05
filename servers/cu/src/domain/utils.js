@@ -425,6 +425,15 @@ export const maybeParseInt = pipe(
   (val) => val ? parseInt(val) : undefined
 )
 
+export function isJsonString (str) {
+  try {
+    JSON.parse(str)
+    return true
+  } catch (e) {
+    return false
+  }
+}
+
 const SIG_CONFIG = {
   ARWEAVE: {
     sigLength: 512,
