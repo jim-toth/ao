@@ -51,7 +51,7 @@ describe('arweave', () => {
                   edges: [
                     {
                       node: {
-                        owner: { address: 'owner-123' },
+                        owner: { address: 'owner-123', key: 'key-123' },
                         tags: [
                           {
                             name: 'App-Name',

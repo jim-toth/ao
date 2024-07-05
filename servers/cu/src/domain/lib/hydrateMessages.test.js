@@ -167,7 +167,8 @@ describe('hydrateMessages', () => {
             signature: 'sig-123',
             anchor: 'anchor-123',
             owner: {
-              address: 'owner-123'
+              address: 'owner-123',
+              key: 'key-123'
             },
             tags: [
               { name: 'foo', value: 'bar' }
@@ -185,7 +186,8 @@ describe('hydrateMessages', () => {
           return {
             id,
             owner: {
-              address: 'owner-123'
+              address: 'owner-123',
+              key: 'key-123'
             }
           }
         }
@@ -200,7 +202,8 @@ describe('hydrateMessages', () => {
             signature: 'sig-123',
             anchor: 'anchor-123',
             owner: {
-              address: 'owner-123'
+              address: 'owner-123',
+              key: 'key-123'
             }
           }
         }
